@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useStockStore } from "@/store/useStockStore";
 import { useSalesStore } from "@/store/useSalesStore";
-import type { StockItem } from "@/store/useStockStore";
+import type { StockItem } from "@/types/stock";
 import { ResponsivePie } from '@nivo/pie';
 import { ResponsiveBar } from '@nivo/bar';
 import { Badge } from "@/components/ui/badge";
