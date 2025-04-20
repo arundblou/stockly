@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
+import { salesService } from '@/lib/sales-service';
 
 export interface SalesItem {
   Marka: string;
@@ -13,80 +13,81 @@ export interface SalesItem {
   "Satış (VD)": string;
 }
 
-interface SalesState {
-  version: number;
+interface SalesStore {
   salesData: SalesItem[];
   searchQuery: string;
   filterField: string;
   filterValue: string;
-  setSalesData: (data: SalesItem[]) => void;
-  clearSalesData: () => void;
+  setSalesData: (data: SalesItem[]) => Promise<void>;
+  clearSalesData: () => Promise<void>;
   setSearchQuery: (query: string) => void;
   setFilter: (field: string, value: string) => void;
   getFilteredData: () => SalesItem[];
+  loadSalesData: () => Promise<void>;
 }
 
-interface PersistedState extends Omit<SalesState, 'getFilteredData'> {}
+export const useSalesStore = create<SalesStore>((set, get) => ({
+  salesData: [],
+  searchQuery: '',
+  filterField: '',
+  filterValue: '',
 
-export const useSalesStore = create<SalesState>()(
-  persist(
-    (set, get) => ({
-      version: 1,
-      salesData: [],
-      searchQuery: '',
-      filterField: '',
-      filterValue: '',
-      setSalesData: (data) => set({ salesData: data }),
-      clearSalesData: () => set({ salesData: [] }),
-      setSearchQuery: (query) => set({ searchQuery: query }),
-      setFilter: (field, value) => set({ filterField: field, filterValue: value }),
-      getFilteredData: () => {
-        const { salesData, searchQuery, filterField, filterValue } = get();
-        
-        return salesData.filter((item) => {
-          // Genel arama
-          if (searchQuery) {
-            const searchLower = searchQuery.toLowerCase();
-            return Object.values(item).some(
-              (value) => value != null && value.toString().toLowerCase().includes(searchLower)
-            );
-          }
-          
-          // Spesifik alan filtresi
-          if (filterField && filterValue) {
-            const itemValue = item[filterField as keyof SalesItem];
-            return itemValue != null && itemValue.toString().toLowerCase().includes(filterValue.toLowerCase());
-          }
-          
-          return true;
-        });
-      },
-    }),
-    {
-      name: 'sales-storage',
-      storage: createJSONStorage(() => {
-        if (typeof window !== 'undefined') {
-          return window.localStorage;
-        }
-        return {
-          getItem: () => null,
-          setItem: () => {},
-          removeItem: () => {}
-        }
-      }),
-      version: 1,
-      migrate: (persistedState: unknown, version: number) => {
-        if (version === 0) {
-          return {
-            version: 1,
-            salesData: (persistedState as PersistedState)?.salesData || [],
-            searchQuery: '',
-            filterField: '',
-            filterValue: '',
-          };
-        }
-        return persistedState as PersistedState;
-      },
+  setSalesData: async (data) => {
+    try {
+      await salesService.addSalesItems(data);
+      const updatedData = await salesService.getSalesItems();
+      set({ salesData: updatedData });
+    } catch (error) {
+      console.error('Error setting sales data:', error);
+      throw error;
     }
-  )
-); 
+  },
+
+  clearSalesData: async () => {
+    try {
+      await salesService.clearSalesItems();
+      set({ salesData: [] });
+    } catch (error) {
+      console.error('Error clearing sales data:', error);
+      throw error;
+    }
+  },
+
+  loadSalesData: async () => {
+    try {
+      const data = await salesService.getSalesItems();
+      set({ salesData: data });
+    } catch (error) {
+      console.error('Error loading sales data:', error);
+      throw error;
+    }
+  },
+
+  setSearchQuery: (query) => set({ searchQuery: query }),
+
+  setFilter: (field, value) => set({ filterField: field, filterValue: value }),
+
+  getFilteredData: () => {
+    const { salesData, searchQuery, filterField, filterValue } = get();
+    
+    let filteredData = [...salesData];
+
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      filteredData = filteredData.filter(item =>
+        Object.values(item).some(value =>
+          value != null && String(value).toLowerCase().includes(query)
+        )
+      );
+    }
+
+    if (filterField && filterValue) {
+      filteredData = filteredData.filter(item => {
+        const itemValue = item[filterField as keyof SalesItem];
+        return itemValue != null && String(itemValue).toLowerCase().includes(filterValue.toLowerCase());
+      });
+    }
+
+    return filteredData;
+  }
+})); 

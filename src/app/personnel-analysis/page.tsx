@@ -2,82 +2,149 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ResponsivePie } from "@nivo/pie";
-import { Package2, Upload, ChevronDown, ChevronUp } from "lucide-react";
-import { useState } from "react";
+import { Package2, Upload, Loader2, InfoIcon } from "lucide-react";
+import { useState, useEffect } from "react";
 import * as XLSX from 'xlsx';
-
-// Excel verisi için tip tanımı
-interface SalesData {
-  personelAdi: string;
-  marka: string;
-  urunKodu: string;
-  renkKodu: string;
-  satisAdeti: number;
-  satisFiyati: number;
-}
-
-// Excel row tipi
-interface ExcelRow {
-  personelAdi: string | number;
-  marka: string | number;
-  urunKodu: string | number;
-  renkKodu: string | number;
-  satisAdeti: string | number;
-  satisFiyati: string | number;
-}
+import { toast } from "sonner";
+import { personnelService } from "@/lib/personnel-service";
+import { SalesData, ExcelRow } from "@/types/personnel";
 
 export default function PersonnelAnalysisPage() {
-  // localStorage'dan verileri al veya boş array kullan
-  const [salesData, setSalesData] = useState<SalesData[]>(() => {
-    if (typeof window !== 'undefined') {
-      const savedData = localStorage.getItem('salesData');
-      return savedData ? JSON.parse(savedData) : [];
-    }
-    return [];
-  });
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [salesData, setSalesData] = useState<SalesData[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
 
-  // Verileri localStorage'a kaydet
-  const updateSalesData = (newData: SalesData[]) => {
-    setSalesData(newData);
-    localStorage.setItem('salesData', JSON.stringify(newData));
-  };
+  // Verileri yükle
+  useEffect(() => {
+    const logProgress = (message: string) => {
+      console.log(message);
+      setLoadingMessage(message);
+    };
+
+    const fetchPersonnelData = async () => {
+      try {
+        setIsLoading(true);
+        logProgress('Veritabanı ile bağlantı kuruluyor...');
+        
+        // Konsola ilerleme bilgisi eklemek için bir dinleyici ekleyelim
+        const originalConsoleLog = console.log;
+        console.log = (message, ...args) => {
+          originalConsoleLog(message, ...args);
+          if (typeof message === 'string' && 
+              (message.includes('Toplam personel veri sayısı') || 
+               message.includes('Çekilen toplam personel veri sayısı'))) {
+            setLoadingMessage(message);
+          }
+        };
+        
+        const data = await personnelService.getPersonnelData();
+        setSalesData(data);
+        
+        // Konsol fonksiyonunu eski haline getirelim
+        console.log = originalConsoleLog;
+      } catch (error) {
+        console.error('Error loading personnel data:', error);
+        toast.error('Personel verilerini yüklerken bir hata oluştu');
+      } finally {
+        setIsLoading(false);
+        setLoadingMessage('');
+      }
+    };
+
+    fetchPersonnelData();
+  }, []);
 
   // Excel dosyasını işleme fonksiyonu
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const data = e.target?.result;
-        const workbook = XLSX.read(data, { type: 'binary' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const rawData = XLSX.utils.sheet_to_json(worksheet) as ExcelRow[];
+      try {
+        setIsLoading(true);
+        setLoadingMessage('Excel dosyası okunuyor...');
         
-        // Verileri doğru formata dönüştür
-        const formattedData = rawData.map(row => ({
-          personelAdi: String(row.personelAdi || ''),
-          marka: String(row.marka || ''),
-          urunKodu: String(row.urunKodu || ''),
-          renkKodu: String(row.renkKodu || ''),
-          satisAdeti: Number(row.satisAdeti) || 0,
-          satisFiyati: Number(row.satisFiyati) || 0
-        }));
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const data = e.target?.result;
+            if (!data) {
+              throw new Error('Dosya okunamadı');
+            }
+            
+            setLoadingMessage('Excel verisi işleniyor...');
+            const workbook = XLSX.read(data, { type: 'binary' });
+            const sheetName = workbook.SheetNames[0];
+            if (!sheetName) {
+              throw new Error('Excel sayfası bulunamadı');
+            }
+            
+            const worksheet = workbook.Sheets[sheetName];
+            const rawData = XLSX.utils.sheet_to_json(worksheet) as ExcelRow[];
+            
+            if (rawData.length === 0) {
+              throw new Error('Excel dosyası boş veya geçersiz format');
+            }
+            
+            // Verileri doğru formata dönüştür
+            const formattedData = rawData.map(row => ({
+              personelAdi: String(row.personelAdi || ''),
+              marka: String(row.marka || ''),
+              urunKodu: String(row.urunKodu || ''),
+              renkKodu: String(row.renkKodu || ''),
+              satisAdeti: Number(row.satisAdeti) || 0,
+              satisFiyati: Number(row.satisFiyati) || 0
+            }));
 
-        updateSalesData(formattedData);
-      };
-      reader.readAsBinaryString(file);
+            setLoadingMessage(`${formattedData.length} personel verisi veritabanına ekleniyor...`);
+            await personnelService.addPersonnelData(formattedData);
+            const updatedData = await personnelService.getPersonnelData();
+            setSalesData(updatedData);
+            toast.success(`${formattedData.length} personel kaydı başarıyla yüklendi`);
+          } catch (error) {
+            console.error('Error processing file:', error);
+            toast.error(`Excel işlenirken hata oluştu`);
+          } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
+          }
+        };
+        
+        reader.onerror = () => {
+          toast.error('Dosya okunurken bir hata oluştu');
+          setIsLoading(false);
+          setLoadingMessage('');
+        };
+        
+        reader.readAsBinaryString(file);
+      } catch (error) {
+        console.error('Error uploading file:', error);
+        toast.error(`Dosya yüklenirken hata oluştu`);
+        setIsLoading(false);
+        setLoadingMessage('');
+      }
     }
+    
+    // Input'u sıfırla ki aynı dosyayı tekrar seçebilsin
+    event.target.value = '';
   };
 
   // Verileri temizleme fonksiyonu
-  const handleClearData = () => {
-    if (window.confirm('Tüm veriler silinecek. Emin misiniz?')) {
-      updateSalesData([]);
+  const handleClearData = async () => {
+    if (window.confirm('Tüm personel verileri silinecek. Emin misiniz?')) {
+      try {
+        setIsLoading(true);
+        setLoadingMessage('Veriler siliniyor...');
+        await personnelService.clearPersonnelData();
+        setSalesData([]);
+        toast.success('Tüm personel verileri başarıyla silindi');
+      } catch (error) {
+        console.error('Error clearing data:', error);
+        toast.error('Veriler silinirken hata oluştu');
+      } finally {
+        setIsLoading(false);
+        setLoadingMessage('');
+      }
     }
   };
 
@@ -137,25 +204,46 @@ export default function PersonnelAnalysisPage() {
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Personel Analiz Raporu</h1>
         <div className="flex gap-4">
-          <Button onClick={() => document.getElementById('fileInput')?.click()}>
-            <Upload className="mr-2 h-4 w-4" />
-            Excel Yükle
-          </Button>
           <input
             id="fileInput"
             type="file"
             accept=".xlsx,.xls"
             className="hidden"
             onChange={handleFileUpload}
+            disabled={isLoading}
           />
+          <Button onClick={() => document.getElementById('fileInput')?.click()} disabled={isLoading}>
+            <Upload className="mr-2 h-4 w-4" />
+            {isLoading ? 'İşlem Yapılıyor...' : 'Excel Yükle'}
+          </Button>
           {salesData.length > 0 && (
-            <Button variant="destructive" onClick={handleClearData}>
+            <Button variant="destructive" onClick={handleClearData} disabled={isLoading}>
               <Package2 className="mr-2 h-4 w-4" />
-              Verileri Temizle
+              {isLoading ? 'İşlem Yapılıyor...' : 'Verileri Temizle'}
             </Button>
           )}
         </div>
       </div>
+
+      {/* Yükleme mesajı */}
+      {isLoading && loadingMessage && (
+        <div className="mb-4 p-4 bg-blue-50 text-blue-700 rounded-md flex items-center gap-2">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          <p>{loadingMessage}</p>
+        </div>
+      )}
+
+      {/* Veri istatistik bilgisi */}
+      {salesData.length > 0 && (
+        <div className="mb-4 p-4 bg-muted rounded-md flex items-center gap-2">
+          <InfoIcon className="h-5 w-5 text-blue-500" />
+          <div>
+            <p className="text-sm">
+              <strong>Toplam Veri:</strong> {salesData.length} personel kaydı
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* İstatistik Kartları */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -204,7 +292,12 @@ export default function PersonnelAnalysisPage() {
           </CardHeader>
           <CardContent>
             <div className="h-[400px]">
-              {pieData.length > 0 ? (
+              {isLoading ? (
+                <div className="flex flex-col items-center justify-center h-full">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary mb-2" />
+                  <p className="text-muted-foreground">{loadingMessage || 'Yükleniyor...'}</p>
+                </div>
+              ) : pieData.length > 0 ? (
                 <ResponsivePie
                   data={pieData}
                   margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
@@ -264,64 +357,75 @@ export default function PersonnelAnalysisPage() {
           </CardHeader>
           <CardContent>
             <ScrollArea className="h-[400px]">
-              <div className="space-y-3">
-                {(() => {
-                  const totalAmount = performanceBarData.reduce((sum, item) => sum + item["Satış Tutarı"], 0);
-                  return performanceBarData
-                    .sort((a, b) => b["Satış Tutarı"] - a["Satış Tutarı"])
-                    .map((item, index) => {
-                      const percentage = (item["Satış Tutarı"] / totalAmount) * 100;
-                      return (
-                        <div
-                          key={index}
-                          className="relative p-4 bg-secondary/5 rounded-lg hover:bg-secondary/10 transition-colors"
-                        >
-                          {/* Progress bar arka planı */}
-                          <div 
-                            className="absolute left-0 top-0 h-full bg-primary/5 rounded-lg transition-all"
-                            style={{ width: `${percentage}%` }}
-                          />
-                          
-                          {/* İçerik */}
-                          <div className="relative flex items-center justify-between">
-                            <div className="flex items-center gap-4">
-                              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
-                                <span className="text-sm font-bold">{index + 1}</span>
-                              </div>
-                              <div>
-                                <h3 className="font-medium">{item.name}</h3>
-                                <div className="text-sm text-muted-foreground">
-                                  {new Intl.NumberFormat('tr-TR').format(item["Satış Adedi"])} adet satış
+              {isLoading ? (
+                <div className="flex flex-col items-center justify-center h-full">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary mb-2" />
+                  <p className="text-muted-foreground">{loadingMessage || 'Yükleniyor...'}</p>
+                </div>
+              ) : performanceBarData.length > 0 ? (
+                <div className="space-y-3">
+                  {(() => {
+                    const totalAmount = performanceBarData.reduce((sum, item) => sum + item["Satış Tutarı"], 0);
+                    return performanceBarData
+                      .sort((a, b) => b["Satış Tutarı"] - a["Satış Tutarı"])
+                      .map((item, index) => {
+                        const percentage = (item["Satış Tutarı"] / totalAmount) * 100;
+                        return (
+                          <div
+                            key={index}
+                            className="relative p-4 bg-secondary/5 rounded-lg hover:bg-secondary/10 transition-colors"
+                          >
+                            {/* Progress bar arka planı */}
+                            <div 
+                              className="absolute left-0 top-0 h-full bg-primary/5 rounded-lg transition-all"
+                              style={{ width: `${percentage}%` }}
+                            />
+                            
+                            {/* İçerik */}
+                            <div className="relative flex items-center justify-between">
+                              <div className="flex items-center gap-4">
+                                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
+                                  <span className="text-sm font-bold">{index + 1}</span>
+                                </div>
+                                <div>
+                                  <h3 className="font-medium">{item.name}</h3>
+                                  <div className="text-sm text-muted-foreground">
+                                    {new Intl.NumberFormat('tr-TR').format(item["Satış Adedi"])} adet satış
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                            <div className="text-right">
-                              <div className="flex items-center gap-2">
-                                <div className="text-xl font-bold text-green-600">
-                                  {new Intl.NumberFormat('tr-TR', { 
+                              <div className="text-right">
+                                <div className="flex items-center gap-2">
+                                  <div className="text-xl font-bold text-green-600">
+                                    {new Intl.NumberFormat('tr-TR', { 
+                                      style: 'currency', 
+                                      currency: 'TRY',
+                                      maximumFractionDigits: 0 
+                                    }).format(item["Satış Tutarı"])}
+                                  </div>
+                                  <div className="text-sm font-semibold text-primary">
+                                    {percentage.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="text-sm text-muted-foreground">
+                                  Ortalama: {new Intl.NumberFormat('tr-TR', { 
                                     style: 'currency', 
                                     currency: 'TRY',
                                     maximumFractionDigits: 0 
-                                  }).format(item["Satış Tutarı"])}
+                                  }).format(item["Satış Tutarı"] / item["Satış Adedi"])} / adet
                                 </div>
-                                <div className="text-sm font-semibold text-primary">
-                                  {percentage.toFixed(1)}%
-                                </div>
-                              </div>
-                              <div className="text-sm text-muted-foreground">
-                                Ortalama: {new Intl.NumberFormat('tr-TR', { 
-                                  style: 'currency', 
-                                  currency: 'TRY',
-                                  maximumFractionDigits: 0 
-                                }).format(item["Satış Tutarı"] / item["Satış Adedi"])} / adet
                               </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    });
-                })()}
-              </div>
+                        );
+                      });
+                  })()}
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-full text-muted-foreground">
+                  Veri yüklenmedi
+                </div>
+              )}
             </ScrollArea>
           </CardContent>
         </Card>
@@ -333,7 +437,12 @@ export default function PersonnelAnalysisPage() {
             </CardHeader>
             <CardContent>
               <div className="h-[400px]">
-                {performanceBarData.length > 0 ? (
+                {isLoading ? (
+                  <div className="flex flex-col items-center justify-center h-full">
+                    <Loader2 className="h-8 w-8 animate-spin text-primary mb-2" />
+                    <p className="text-muted-foreground">{loadingMessage || 'Yükleniyor...'}</p>
+                  </div>
+                ) : performanceBarData.length > 0 ? (
                   <ResponsivePie
                     data={performanceBarData.map(item => ({
                       id: item.name,
@@ -413,276 +522,89 @@ export default function PersonnelAnalysisPage() {
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[400px]">
-                <div className="space-y-3">
-                  {(() => {
-                    const sortedBrands = Object.entries(brandDistribution)
-                      .sort(([,a], [,b]) => b - a)
-                      .slice(0, 5);
+                {isLoading ? (
+                  <div className="flex flex-col items-center justify-center h-full">
+                    <Loader2 className="h-8 w-8 animate-spin text-primary mb-2" />
+                    <p className="text-muted-foreground">{loadingMessage || 'Yükleniyor...'}</p>
+                  </div>
+                ) : Object.keys(brandDistribution).length > 0 ? (
+                  <div className="space-y-3">
+                    {(() => {
+                      const sortedBrands = Object.entries(brandDistribution)
+                        .sort(([,a], [,b]) => b - a)
+                        .slice(0, 5);
 
-                    return sortedBrands.map(([brand, quantity], index) => {
-                      const percentage = (quantity / statistics.totalQuantity) * 100;
-                      const brandDetails = salesData.filter(sale => sale.marka === brand).reduce((acc, sale) => {
-                        acc.totalAmount += sale.satisFiyati;
-                        if (!acc.personelSales[sale.personelAdi]) {
-                          acc.personelSales[sale.personelAdi] = 0;
-                        }
-                        acc.personelSales[sale.personelAdi] += sale.satisAdeti;
-                        return acc;
-                      }, { totalAmount: 0, personelSales: {} as Record<string, number> });
+                      return sortedBrands.map(([brand, quantity], index) => {
+                        const percentage = (quantity / statistics.totalQuantity) * 100;
+                        const brandDetails = salesData.filter(sale => sale.marka === brand).reduce((acc, sale) => {
+                          acc.totalAmount += sale.satisFiyati;
+                          if (!acc.personelSales[sale.personelAdi]) {
+                            acc.personelSales[sale.personelAdi] = 0;
+                          }
+                          acc.personelSales[sale.personelAdi] += sale.satisAdeti;
+                          return acc;
+                        }, { totalAmount: 0, personelSales: {} as Record<string, number> });
 
-                      const topSeller = Object.entries(brandDetails.personelSales)
-                        .sort(([,a], [,b]) => b - a)[0];
+                        const topSeller = Object.entries(brandDetails.personelSales)
+                          .sort(([,a], [,b]) => b - a)[0];
 
-                      return (
-                        <div
-                          key={brand}
-                          className="relative p-4 bg-secondary/5 rounded-lg hover:bg-secondary/10 transition-colors"
-                        >
-                          {/* Progress bar arka planı */}
-                          <div 
-                            className="absolute left-0 top-0 h-full bg-primary/5 rounded-lg transition-all"
-                            style={{ width: `${percentage}%` }}
-                          />
-                          
-                          {/* İçerik */}
-                          <div className="relative flex items-center justify-between">
-                            <div className="flex items-center gap-4">
-                              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                                <span className="text-sm font-bold">{index + 1}</span>
+                        return (
+                          <div
+                            key={brand}
+                            className="relative p-4 bg-secondary/5 rounded-lg hover:bg-secondary/10 transition-colors"
+                          >
+                            {/* Progress bar arka planı */}
+                            <div 
+                              className="absolute left-0 top-0 h-full bg-primary/5 rounded-lg transition-all"
+                              style={{ width: `${percentage}%` }}
+                            />
+                            
+                            {/* İçerik */}
+                            <div className="relative flex items-center justify-between">
+                              <div className="flex items-center gap-4">
+                                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                                  <span className="text-sm font-bold">{index + 1}</span>
+                                </div>
+                                <div>
+                                  <h3 className="font-medium">{brand}</h3>
+                                  <div className="text-sm text-muted-foreground">
+                                    En çok satan: {topSeller?.[0]} ({new Intl.NumberFormat('tr-TR').format(topSeller?.[1] || 0)} adet)
+                                  </div>
+                                </div>
                               </div>
-                              <div>
-                                <h3 className="font-medium">{brand}</h3>
+                              <div className="text-right">
+                                <div className="flex items-center gap-2">
+                                  <div className="text-xl font-bold text-green-600">
+                                    {new Intl.NumberFormat('tr-TR').format(quantity)} adet
+                                  </div>
+                                  <div className="text-sm font-semibold text-primary">
+                                    {percentage.toFixed(1)}%
+                                  </div>
+                                </div>
                                 <div className="text-sm text-muted-foreground">
-                                  En çok satan: {topSeller?.[0]} ({new Intl.NumberFormat('tr-TR').format(topSeller?.[1] || 0)} adet)
+                                  Ciro: {new Intl.NumberFormat('tr-TR', { 
+                                    style: 'currency', 
+                                    currency: 'TRY',
+                                    maximumFractionDigits: 0 
+                                  }).format(brandDetails.totalAmount)}
                                 </div>
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <div className="flex items-center gap-2">
-                                <div className="text-xl font-bold text-green-600">
-                                  {new Intl.NumberFormat('tr-TR').format(quantity)} adet
-                                </div>
-                                <div className="text-sm font-semibold text-primary">
-                                  {percentage.toFixed(1)}%
-                                </div>
-                              </div>
-                              <div className="text-sm text-muted-foreground">
-                                Ciro: {new Intl.NumberFormat('tr-TR', { 
-                                  style: 'currency', 
-                                  currency: 'TRY',
-                                  maximumFractionDigits: 0 
-                                }).format(brandDetails.totalAmount)}
                               </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
+                    Veri yüklenmedi
+                  </div>
+                )}
               </ScrollArea>
             </CardContent>
           </Card>
         </div>
       </div>
-
-      {/* En Çok Satan 5 Ürün */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Satışı Yüksek olan ürünler</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ScrollArea className="h-[400px]">
-            <div className="space-y-3">
-              {(() => {
-                // Ürün bazlı satış verilerini hesapla
-                const productSales = salesData.reduce((acc, sale) => {
-                  const key = sale.urunKodu;
-                  if (!acc[key]) {
-                    acc[key] = {
-                      urunKodu: sale.urunKodu,
-                      toplamAdet: 0,
-                      toplamTutar: 0,
-                      markalar: new Set(),
-                      personeller: {},
-                      renkKodlari: new Set()
-                    };
-                  }
-                  acc[key].toplamAdet += sale.satisAdeti;
-                  acc[key].toplamTutar += sale.satisFiyati;
-                  acc[key].markalar.add(sale.marka);
-                  acc[key].renkKodlari.add(sale.renkKodu);
-                  
-                  if (!acc[key].personeller[sale.personelAdi]) {
-                    acc[key].personeller[sale.personelAdi] = {
-                      adet: 0,
-                      tutar: 0
-                    };
-                  }
-                  acc[key].personeller[sale.personelAdi].adet += sale.satisAdeti;
-                  acc[key].personeller[sale.personelAdi].tutar += sale.satisFiyati;
-                  
-                  return acc;
-                }, {} as Record<string, {
-                  urunKodu: string;
-                  toplamAdet: number;
-                  toplamTutar: number;
-                  markalar: Set<string>;
-                  personeller: Record<string, { adet: number; tutar: number }>;
-                  renkKodlari: Set<string>;
-                }>);
-
-                // En çok satan 5 ürünü bul
-                const top5Products = Object.values(productSales)
-                  .sort((a, b) => b.toplamAdet - a.toplamAdet)
-                  .slice(0, 5);
-
-                return top5Products.map((product, index) => {
-                  const bestSeller = Object.entries(product.personeller)
-                    .sort(([,a], [,b]) => b.adet - a.adet)[0];
-                  
-                  const percentage = (product.toplamAdet / statistics.totalQuantity) * 100;
-
-                  return (
-                    <div
-                      key={product.urunKodu}
-                      className="relative p-4 bg-secondary/5 rounded-lg hover:bg-secondary/10 transition-colors"
-                    >
-                      {/* Progress bar arka planı */}
-                      <div 
-                        className="absolute left-0 top-0 h-full bg-primary/5 rounded-lg transition-all"
-                        style={{ width: `${percentage}%` }}
-                      />
-                      
-                      {/* İçerik */}
-                      <div className="relative flex flex-col space-y-3">
-                        {/* Üst Kısım - Ürün Bilgisi */}
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                              <span className="text-sm font-bold">{index + 1}</span>
-                            </div>
-                            <div>
-                              <h3 className="font-medium">Ürün Kodu: {product.urunKodu}</h3>
-                              <div className="text-sm text-muted-foreground">
-                                {Array.from(product.markalar).join(', ')}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Renk Kodları: {Array.from(product.renkKodlari).join(', ')}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <div className="flex items-center gap-2">
-                              <div className="text-xl font-bold text-green-600">
-                                {new Intl.NumberFormat('tr-TR').format(product.toplamAdet)} adet
-                              </div>
-                              <div className="text-sm font-semibold text-primary">
-                                {percentage.toFixed(1)}%
-                              </div>
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Ciro: {new Intl.NumberFormat('tr-TR', { 
-                                style: 'currency', 
-                                currency: 'TRY',
-                                maximumFractionDigits: 0 
-                              }).format(product.toplamTutar)}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Alt Kısım - En İyi Satıcı */}
-                        <div className="flex items-center justify-between bg-primary/5 p-2 rounded-md">
-                          <div className="flex items-center gap-2">
-                            <Badge variant="outline" className="bg-primary/10">
-                              En İyi Satıcı
-                            </Badge>
-                            <span className="font-medium">{bestSeller?.[0]}</span>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className="text-sm">
-                              <span className="font-semibold text-green-600">
-                                {new Intl.NumberFormat('tr-TR').format(bestSeller?.[1].adet || 0)}
-                              </span>
-                              <span className="text-muted-foreground ml-1">adet</span>
-                            </div>
-                            <div className="text-sm text-primary font-medium">
-                              ({((bestSeller?.[1].adet || 0) / product.toplamAdet * 100).toFixed(1)}%)
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
-
-      {/* Satış Detay Listesi */}
-      <Card>
-        <CardHeader 
-          className="cursor-pointer hover:bg-secondary/10 transition-colors"
-          onClick={() => setIsDetailsOpen(!isDetailsOpen)}
-        >
-          <div className="flex items-center justify-between">
-            <CardTitle>Satış Detayları</CardTitle>
-            <Button variant="ghost" size="icon">
-              {isDetailsOpen ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
-        </CardHeader>
-        {isDetailsOpen && (
-          <CardContent>
-            <ScrollArea className="h-[400px] w-full">
-              <div className="space-y-4">
-                {salesData.map((sale, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center justify-between p-4 bg-secondary/10 rounded-lg hover:bg-secondary/20 transition-colors"
-                  >
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-medium">{sale.personelAdi}</h3>
-                        <Badge variant="outline">{sale.marka}</Badge>
-                      </div>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">Ürün Kodu:</span>
-                          <span className="ml-2 font-medium">{sale.urunKodu}</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Renk Kodu:</span>
-                          <span className="ml-2 font-medium">{sale.renkKodu}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-6">
-                      <div className="text-center">
-                        <div className="text-sm text-muted-foreground">Satış Adedi</div>
-                        <div className="text-xl font-bold text-blue-600">{sale.satisAdeti}</div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-sm text-muted-foreground">Satış Tutarı</div>
-                        <div className="text-xl font-bold text-green-600">
-                          {new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' })
-                            .format(sale.satisFiyati)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        )}
-      </Card>
     </div>
   );
 } 
